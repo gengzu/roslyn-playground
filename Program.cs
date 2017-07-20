@@ -5,6 +5,7 @@ using System.Linq;
 using System.Reflection;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
+using Microsoft.CodeAnalysis.CSharp.Syntax;
 
 namespace roslyn_playground
 {
@@ -16,16 +17,22 @@ namespace roslyn_playground
 
             var staticCalculator = CreateStaticCalculator();
 
-            System.Console.WriteLine(staticCalculator.Add(5, 10));
+            System.Console.WriteLine("result 1 - " + staticCalculator.Add(5, 10));
 
-            CreateDynamicCalculator();
+            var dynamicCalculator = CreateDynamicCalculator();
+
+            System.Console.WriteLine("result 2 - " + dynamicCalculator.Add(2, 3));
 
         }
 
-        static void CreateDynamicCalculator()
+        static CompilationUnitSyntax CreateCompilationUnit()
         {
             var addMethodDeclaration = SyntaxFactory.MethodDeclaration(SyntaxFactory.ParseTypeName("int"), "Add")
                 .AddModifiers(SyntaxFactory.Token(SyntaxKind.PublicKeyword))
+                .AddParameterListParameters(new[] {
+                    SyntaxFactory.Parameter(SyntaxFactory.Identifier("a")).WithType(SyntaxFactory.ParseTypeName("int")),
+                    SyntaxFactory.Parameter(SyntaxFactory.Identifier("b")).WithType(SyntaxFactory.ParseTypeName("int"))
+                    })
                 .WithBody(SyntaxFactory.Block(SyntaxFactory.ParseStatement("return a + b;")))
             ;
 
@@ -37,22 +44,45 @@ namespace roslyn_playground
 
             var @namespace = SyntaxFactory.NamespaceDeclaration(SyntaxFactory.ParseName("GeneratedCalculator")).NormalizeWhitespace()
                 .AddUsings(SyntaxFactory.UsingDirective(SyntaxFactory.ParseName("System")))
+                .AddUsings(SyntaxFactory.UsingDirective(SyntaxFactory.ParseName("roslyn_playground")))
                 .AddMembers(classDeclaration)
                 ;
 
-            var unit = SyntaxFactory.CompilationUnit()
+            return SyntaxFactory.CompilationUnit()
                 .AddMembers(@namespace)
                 ;
+        }
 
-            System.Console.WriteLine(@namespace.NormalizeWhitespace().ToFullString());
+        static ICalculator CreateDynamicCalculator()
+        {
+            var unit = CreateCompilationUnit();
 
-            var compiler = CSharpCompilation.Create("testAssembly", syntaxTrees: new[] { unit.SyntaxTree });
+            System.Console.WriteLine(unit.NormalizeWhitespace().ToFullString());
+
+            var compiler = CSharpCompilation.Create("testAssembly", 
+                syntaxTrees: new[] { unit.SyntaxTree }, 
+                options: new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary))
+                .AddReferences(
+                    MetadataReference.CreateFromFile(typeof(System.Object).Assembly.Location),
+                    MetadataReference.CreateFromFile(Assembly.GetExecutingAssembly().Location)
+                );
 
             using (var ms = new MemoryStream())
             {
                 var result = compiler.Emit(ms);
 
-                if (!result.Success)
+                if (result.Success)
+                {
+                    ms.Seek(0, SeekOrigin.Begin);
+                    Assembly assembly = Assembly.Load(ms.ToArray());
+
+                    var mf = assembly.CreateInstance("GeneratedCalculator.DynamicCalculator");
+
+                    System.Console.WriteLine("DONE!!! " + mf.GetType());
+
+                    return mf as ICalculator;
+                }
+                else
                 {
                     IEnumerable<Diagnostic> failures = result.Diagnostics.Where(diagnostic =>
                         diagnostic.IsWarningAsError ||
@@ -62,11 +92,8 @@ namespace roslyn_playground
                     {
                         Console.Error.WriteLine("{0}: {1}", diagnostic.Id, diagnostic.GetMessage());
                     }
-                }
-                else
-                {
-                    ms.Seek(0, SeekOrigin.Begin);
-                    Assembly assembly = Assembly.Load(ms.ToArray());
+
+                    return null;
                 }
             }
         }
